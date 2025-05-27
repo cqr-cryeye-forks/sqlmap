@@ -58,7 +58,7 @@ met:
     disclaimer in the documentation and/or other materials provided
     with the distribution.
 
-  * Neither the name of the the Beautiful Soup Consortium and All
+  * Neither the name of the Beautiful Soup Consortium and All
     Night Kosher Bakery nor the names of its contributors may be
     used to endorse or promote products derived from this software
     without specific prior written permission.
@@ -80,12 +80,11 @@ from __future__ import generators
 from __future__ import print_function
 
 __author__ = "Leonard Richardson (leonardr@segfault.org)"
-__version__ = "3.2.1"
+__version__ = "3.2.1b"
 __copyright__ = "Copyright (c) 2004-2012 Leonard Richardson"
 __license__ = "New-style BSD"
 
 import codecs
-import types
 import re
 import sys
 
@@ -94,14 +93,16 @@ if sys.version_info >= (3, 0):
     text_type = str
     binary_type = bytes
     basestring = str
+    unichr = chr
 else:
     text_type = unicode
     binary_type = str
 
 try:
-  from htmlentitydefs import name2codepoint
+    from html.entities import name2codepoint
 except ImportError:
-  name2codepoint = {}
+    from htmlentitydefs import name2codepoint
+
 try:
     set
 except NameError:
@@ -2029,6 +2030,5 @@ class UnicodeDammit:
 
 #By default, act as an HTML pretty-printer.
 if __name__ == '__main__':
-    import sys
     soup = BeautifulSoup(sys.stdin)
     print(soup.prettify())

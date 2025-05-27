@@ -1,11 +1,12 @@
 #!/usr/bin/env python
 
 """
-Copyright (c) 2006-2020 sqlmap developers (http://sqlmap.org/)
+Copyright (c) 2006-2025 sqlmap developers (https://sqlmap.org)
 See the file 'LICENSE' for copying permission
 """
 
 import io
+import re
 import time
 import types
 
@@ -13,6 +14,7 @@ from lib.core.common import getHostHeader
 from lib.core.common import getSafeExString
 from lib.core.common import logHTTPTraffic
 from lib.core.common import readInput
+from lib.core.convert import getBytes
 from lib.core.convert import getUnicode
 from lib.core.data import conf
 from lib.core.data import kb
@@ -30,6 +32,7 @@ from lib.core.settings import MAX_TOTAL_REDIRECTIONS
 from lib.core.threads import getCurrentThreadData
 from lib.request.basic import decodePage
 from lib.request.basic import parseResponse
+from thirdparty import six
 from thirdparty.six.moves import urllib as _urllib
 
 class SmartRedirectHandler(_urllib.request.HTTPRedirectHandler):
@@ -46,13 +49,13 @@ class SmartRedirectHandler(_urllib.request.HTTPRedirectHandler):
 
     def _ask_redirect_choice(self, redcode, redurl, method):
         with kb.locks.redirect:
-            if kb.redirectChoice is None:
+            if kb.choices.redirect is None:
                 msg = "got a %d redirect to " % redcode
                 msg += "'%s'. Do you want to follow? [Y/n] " % redurl
 
-                kb.redirectChoice = REDIRECTION.YES if readInput(msg, default='Y', boolean=True) else REDIRECTION.NO
+                kb.choices.redirect = REDIRECTION.YES if readInput(msg, default='Y', boolean=True) else REDIRECTION.NO
 
-            if kb.redirectChoice == REDIRECTION.YES and method == HTTPMETHOD.POST and kb.resendPostOnRedirect is None:
+            if kb.choices.redirect == REDIRECTION.YES and method == HTTPMETHOD.POST and kb.resendPostOnRedirect is None:
                 msg = "redirect is a result of a "
                 msg += "POST request. Do you want to "
                 msg += "resend original POST data to a new "
@@ -64,18 +67,18 @@ class SmartRedirectHandler(_urllib.request.HTTPRedirectHandler):
                 self.redirect_request = self._redirect_request
 
     def _redirect_request(self, req, fp, code, msg, headers, newurl):
-        newurl = newurl.replace(' ', '%20')
-        return _urllib.request.Request(newurl, data=req.data, headers=req.headers, origin_req_host=req.get_origin_req_host())
+        return _urllib.request.Request(newurl.replace(' ', '%20'), data=req.data, headers=req.headers, origin_req_host=req.get_origin_req_host() if hasattr(req, "get_origin_req_host") else req.origin_req_host)
 
     def http_error_302(self, req, fp, code, msg, headers):
         start = time.time()
         content = None
+        forceRedirect = False
         redurl = self._get_header_redirect(headers) if not conf.ignoreRedirects else None
 
         try:
             content = fp.read(MAX_CONNECTION_TOTAL_SIZE)
         except:  # e.g. IncompleteRead
-            content = ""
+            content = b""
         finally:
             if content:
                 try:  # try to write it back to the read buffer so we could reuse it in further steps
@@ -110,12 +113,18 @@ class SmartRedirectHandler(_urllib.request.HTTPRedirectHandler):
                     redurl = _urllib.parse.urljoin(req.get_full_url(), redurl)
 
                 self._infinite_loop_check(req)
-                self._ask_redirect_choice(code, redurl, req.get_method())
+                if conf.scope:
+                    if not re.search(conf.scope, redurl, re.I):
+                        redurl = None
+                    else:
+                        forceRedirect = True
+                else:
+                    self._ask_redirect_choice(code, redurl, req.get_method())
             except ValueError:
                 redurl = None
                 result = fp
 
-        if redurl and kb.redirectChoice == REDIRECTION.YES:
+        if redurl and (kb.choices.redirect == REDIRECTION.YES or forceRedirect):
             parseResponse(content, headers)
 
             req.headers[HTTP_HEADER.HOST] = getHostHeader(redurl)
@@ -124,7 +133,7 @@ class SmartRedirectHandler(_urllib.request.HTTPRedirectHandler):
                 delimiter = conf.cookieDel or DEFAULT_COOKIE_DELIMITER
                 last = None
 
-                for part in req.headers.get(HTTP_HEADER.COOKIE, "").split(delimiter) + ([headers[HTTP_HEADER.SET_COOKIE]] if HTTP_HEADER.SET_COOKIE in headers else []):
+                for part in getUnicode(req.headers.get(HTTP_HEADER.COOKIE, "")).split(delimiter) + ([headers[HTTP_HEADER.SET_COOKIE]] if HTTP_HEADER.SET_COOKIE in headers else []):
                     if '=' in part:
                         part = part.strip()
                         key, value = part.split('=', 1)
@@ -153,17 +162,18 @@ class SmartRedirectHandler(_urllib.request.HTTPRedirectHandler):
                     result.info()
                 except AttributeError:
                     def _(self):
-                        return getattr(self, "hdrs") or {}
+                        return getattr(self, "hdrs", {})
+
                     result.info = types.MethodType(_, result)
 
                 if not hasattr(result, "read"):
                     def _(self, length=None):
                         try:
-                            retVal = getSafeExString(ex)
+                            retVal = getSafeExString(ex)        # Note: pyflakes mistakenly marks 'ex' as undefined (NOTE: tested in both Python2 and Python3)
                         except:
                             retVal = ""
-                        finally:
-                            return retVal
+                        return getBytes(retVal)
+
                     result.read = types.MethodType(_, result)
 
                 if not getattr(result, "url", None):
@@ -181,7 +191,7 @@ class SmartRedirectHandler(_urllib.request.HTTPRedirectHandler):
         threadData.lastRedirectURL = (threadData.lastRequestUID, redurl)
 
         result.redcode = code
-        result.redurl = getUnicode(redurl)
+        result.redurl = getUnicode(redurl) if six.PY3 else redurl
         return result
 
     http_error_301 = http_error_303 = http_error_307 = http_error_302

@@ -218,6 +218,15 @@ Formats:
         <clause>1</clause>
         <where>1,2</where>
         <ptype>3</ptype>
+        <prefix>%'</prefix>
+        <suffix> AND '[RANDSTR]%'='[RANDSTR]</suffix>
+    </boundary>
+
+    <boundary>
+        <level>2</level>
+        <clause>1</clause>
+        <where>1,2</where>
+        <ptype>3</ptype>
         <prefix>'</prefix>
         <suffix> AND '[RANDSTR]' LIKE '[RANDSTR]</suffix>
     </boundary>
@@ -544,6 +553,15 @@ Formats:
         <suffix>)|[[ORIGINAL]</suffix>
     </boundary>
     <!-- End of escaped column name boundaries -->
+
+    <boundary>
+        <level>5</level>
+        <clause>7</clause>
+        <where>1</where>
+        <ptype>3</ptype>
+        <prefix> [RANDSTR1],</prefix>
+        <suffix> [RANDSTR2]</suffix>
+    </boundary>
 
     <!-- AGAINST boolean full-text search boundaries (http://dev.mysql.com/doc/refman/5.5/en/fulltext-boolean.html) -->
     <boundary>

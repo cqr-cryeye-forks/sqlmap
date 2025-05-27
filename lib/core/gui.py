@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-Copyright (c) 2006-2020 sqlmap developers (http://sqlmap.org/)
+Copyright (c) 2006-2025 sqlmap developers (https://sqlmap.org)
 See the file 'LICENSE' for copying permission
 """
 
@@ -20,6 +20,7 @@ from lib.core.data import paths
 from lib.core.defaults import defaults
 from lib.core.enums import MKSTEMP_PREFIX
 from lib.core.exception import SqlmapMissingDependence
+from lib.core.exception import SqlmapSystemException
 from lib.core.settings import DEV_EMAIL_ADDRESS
 from lib.core.settings import IS_WIN
 from lib.core.settings import ISSUES_PAGE
@@ -72,7 +73,12 @@ def runGui(parser):
             tab = event.widget.nametowidget(event.widget.select())
             event.widget.configure(height=tab.winfo_reqheight())
 
-    window = _tkinter.Tk()
+    try:
+        window = _tkinter.Tk()
+    except Exception as ex:
+        errMsg = "unable to create GUI window ('%s')" % getSafeExString(ex)
+        raise SqlmapSystemException(errMsg)
+
     window.title(VERSION_STRING)
 
     # Reference: https://www.holadevs.com/pregunta/64750/change-selected-tab-color-in-ttknotebook
@@ -217,7 +223,7 @@ def runGui(parser):
     helpmenu.add_command(label="Wiki pages", command=lambda: webbrowser.open(WIKI_PAGE))
     helpmenu.add_command(label="Report issue", command=lambda: webbrowser.open(ISSUES_PAGE))
     helpmenu.add_separator()
-    helpmenu.add_command(label="About", command=lambda: _tkinter_messagebox.showinfo("About", "Copyright (c) 2006-2020\n\n    (%s)" % DEV_EMAIL_ADDRESS))
+    helpmenu.add_command(label="About", command=lambda: _tkinter_messagebox.showinfo("About", "Copyright (c) 2006-2025\n\n    (%s)" % DEV_EMAIL_ADDRESS))
     menubar.add_cascade(label="Help", menu=helpmenu)
 
     window.config(menu=menubar)

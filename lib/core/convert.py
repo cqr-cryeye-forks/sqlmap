@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-Copyright (c) 2006-2020 sqlmap developers (http://sqlmap.org/)
+Copyright (c) 2006-2025 sqlmap developers (https://sqlmap.org)
 See the file 'LICENSE' for copying permission
 """
 
@@ -13,10 +13,10 @@ except:
 import base64
 import binascii
 import codecs
-import collections
 import json
 import re
 import sys
+import time
 
 from lib.core.bigarray import BigArray
 from lib.core.compat import xrange
@@ -31,6 +31,7 @@ from lib.core.settings import SAFE_HEX_MARKER
 from lib.core.settings import UNICODE_ENCODING
 from thirdparty import six
 from thirdparty.six import unichr as _unichr
+from thirdparty.six.moves import collections_abc as _collections
 
 try:
     from html import escape as htmlEscape
@@ -48,16 +49,16 @@ def base64pickle(value):
     retVal = None
 
     try:
-        retVal = encodeBase64(pickle.dumps(value, PICKLE_PROTOCOL))
+        retVal = encodeBase64(pickle.dumps(value, PICKLE_PROTOCOL), binary=False)
     except:
         warnMsg = "problem occurred while serializing "
         warnMsg += "instance of a type '%s'" % type(value)
         singleTimeWarnMessage(warnMsg)
 
         try:
-            retVal = encodeBase64(pickle.dumps(value))
+            retVal = encodeBase64(pickle.dumps(value), binary=False)
         except:
-            retVal = encodeBase64(pickle.dumps(str(value), PICKLE_PROTOCOL))
+            retVal = encodeBase64(pickle.dumps(str(value), PICKLE_PROTOCOL), binary=False)
 
     return retVal
 
@@ -95,7 +96,7 @@ def htmlUnescape(value):
 
         try:
             retVal = re.sub(r"&#x([^ ;]+);", lambda match: _unichr(int(match.group(1), 16)), retVal)
-        except ValueError:
+        except (ValueError, OverflowError):
             pass
 
     return retVal
@@ -106,7 +107,7 @@ def singleTimeWarnMessage(message):  # Cross-referenced function
     sys.stdout.flush()
 
 def filterNone(values):  # Cross-referenced function
-    return [_ for _ in values if _] if isinstance(values, collections.Iterable) else values
+    return [_ for _ in values if _] if isinstance(values, _collections.Iterable) else values
 
 def isListLike(value):  # Cross-referenced function
     return isinstance(value, (list, tuple, set, BigArray))
@@ -133,6 +134,23 @@ def dejsonize(data):
     """
 
     return json.loads(data)
+
+def rot13(data):
+    """
+    Returns ROT13 encoded/decoded text
+
+    >>> rot13('foobar was here!!')
+    'sbbone jnf urer!!'
+    >>> rot13('sbbone jnf urer!!')
+    'foobar was here!!'
+    """
+
+    # Reference: https://stackoverflow.com/a/62662878
+    retVal = ""
+    alphabit = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    for char in data:
+        retVal += alphabit[alphabit.index(char) + 13] if char in alphabit else char
+    return retVal
 
 def decodeHex(value, binary=True):
     """
@@ -198,7 +216,31 @@ def decodeBase64(value, binary=True, encoding=None):
     True
     >>> decodeBase64("MTIz", binary=False)
     '123'
+    >>> decodeBase64("A-B_CDE") == decodeBase64("A+B/CDE")
+    True
+    >>> decodeBase64(b"MTIzNA") == b"1234"
+    True
+    >>> decodeBase64("MTIzNA") == b"1234"
+    True
+    >>> decodeBase64("MTIzNA==") == b"1234"
+    True
     """
+
+    if value is None:
+        return None
+
+    padding = b'=' if isinstance(value, bytes) else '='
+
+    # Reference: https://stackoverflow.com/a/49459036
+    if not value.endswith(padding):
+        value += 3 * padding
+
+    # Reference: https://en.wikipedia.org/wiki/Base64#URL_applications
+    # Reference: https://perldoc.perl.org/MIME/Base64.html
+    if isinstance(value, bytes):
+        value = value.replace(b'-', b'+').replace(b'_', b'/')
+    else:
+        value = value.replace('-', '+').replace('_', '/')
 
     retVal = base64.b64decode(value)
 
@@ -207,15 +249,22 @@ def decodeBase64(value, binary=True, encoding=None):
 
     return retVal
 
-def encodeBase64(value, binary=True, encoding=None):
+def encodeBase64(value, binary=True, encoding=None, padding=True, safe=False):
     """
     Returns a decoded representation of provided Base64 value
 
     >>> encodeBase64(b"123") == b"MTIz"
     True
-    >>> encodeBase64(u"123", binary=False)
-    'MTIz'
+    >>> encodeBase64(u"1234", binary=False)
+    'MTIzNA=='
+    >>> encodeBase64(u"1234", binary=False, padding=False)
+    'MTIzNA'
+    >>> encodeBase64(decodeBase64("A-B_CDE"), binary=False, safe=True)
+    'A-B_CDE'
     """
+
+    if value is None:
+        return None
 
     if isinstance(value, six.text_type):
         value = value.encode(encoding or UNICODE_ENCODING)
@@ -224,6 +273,19 @@ def encodeBase64(value, binary=True, encoding=None):
 
     if not binary:
         retVal = getText(retVal, encoding)
+
+    if safe:
+        padding = False
+
+        # Reference: https://en.wikipedia.org/wiki/Base64#URL_applications
+        # Reference: https://perldoc.perl.org/MIME/Base64.html
+        if isinstance(retVal, bytes):
+            retVal = retVal.replace(b'+', b'-').replace(b'/', b'_')
+        else:
+            retVal = retVal.replace('+', '-').replace('/', '_')
+
+    if not padding:
+        retVal = retVal.rstrip(b'=' if isinstance(retVal, bytes) else '=')
 
     return retVal
 
@@ -238,7 +300,7 @@ def getBytes(value, encoding=None, errors="strict", unsafe=True):
     retVal = value
 
     if encoding is None:
-        encoding = conf.encoding or UNICODE_ENCODING
+        encoding = conf.get("encoding") or UNICODE_ENCODING
 
     try:
         codecs.lookup(encoding)
@@ -256,7 +318,10 @@ def getBytes(value, encoding=None, errors="strict", unsafe=True):
             if unsafe:
                 retVal = re.sub(r"%s([0-9a-f]{2})" % SAFE_HEX_MARKER, lambda _: decodeHex(_.group(1)), retVal)
         else:
-            retVal = value.encode(encoding, errors)
+            try:
+                retVal = value.encode(encoding, errors)
+            except UnicodeError:
+                retVal = value.encode(UNICODE_ENCODING, errors="replace")
 
             if unsafe:
                 retVal = re.sub(b"\\\\x([0-9a-f]{2})", lambda _: decodeHex(_.group(1)), retVal)
@@ -283,7 +348,13 @@ def getUnicode(value, encoding=None, noneToNull=False):
     True
     >>> getUnicode(1) == u'1'
     True
+    >>> getUnicode(None) == 'None'
+    True
     """
+
+    # Best position for --time-limit mechanism
+    if conf.get("timeLimit") and kb.get("startTime") and (time.time() - kb.startTime > conf.timeLimit):
+        raise SystemExit
 
     if noneToNull and value is None:
         return NULL

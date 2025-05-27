@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-Copyright (c) 2006-2020 sqlmap developers (http://sqlmap.org/)
+Copyright (c) 2006-2025 sqlmap developers (https://sqlmap.org)
 See the file 'LICENSE' for copying permission
 """
 
@@ -9,6 +9,7 @@ from __future__ import division
 
 import os
 import re
+import subprocess
 import time
 
 from lib.controller.action import action
@@ -16,10 +17,8 @@ from lib.controller.checks import checkConnection
 from lib.controller.checks import checkDynParam
 from lib.controller.checks import checkInternet
 from lib.controller.checks import checkNullConnection
-from lib.controller.checks import checkRegexp
 from lib.controller.checks import checkSqlInjection
 from lib.controller.checks import checkStability
-from lib.controller.checks import checkString
 from lib.controller.checks import checkWaf
 from lib.controller.checks import heuristicCheckSqlInjection
 from lib.core.agent import agent
@@ -70,7 +69,7 @@ from lib.core.settings import ASP_NET_CONTROL_REGEX
 from lib.core.settings import CSRF_TOKEN_PARAMETER_INFIXES
 from lib.core.settings import DEFAULT_GET_POST_DELIMITER
 from lib.core.settings import EMPTY_FORM_FIELDS_REGEX
-from lib.core.settings import GOOGLE_ANALYTICS_COOKIE_PREFIX
+from lib.core.settings import GOOGLE_ANALYTICS_COOKIE_REGEX
 from lib.core.settings import HOST_ALIASES
 from lib.core.settings import IGNORE_PARAMETERS
 from lib.core.settings import LOW_TEXT_PERCENT
@@ -188,12 +187,12 @@ def _showInjections():
     if conf.tamper:
         warnMsg = "changes made by tampering scripts are not "
         warnMsg += "included in shown payload content(s)"
-        logger.warn(warnMsg)
+        logger.warning(warnMsg)
 
     if conf.hpp:
         warnMsg = "changes made by HTTP parameter pollution are not "
         warnMsg += "included in shown payload content(s)"
-        logger.warn(warnMsg)
+        logger.warning(warnMsg)
 
 def _randomFillBlankFields(value):
     retVal = value
@@ -291,14 +290,16 @@ def start():
         logger.error(errMsg)
         return False
 
-    if kb.targets and len(kb.targets) > 1:
+    if kb.targets and isListLike(kb.targets) and len(kb.targets) > 1:
         infoMsg = "found a total of %d targets" % len(kb.targets)
         logger.info(infoMsg)
 
-    hostCount = 0
+    targetCount = 0
     initialHeaders = list(conf.httpHeaders)
 
     for targetUrl, targetMethod, targetData, targetCookie, targetHeaders in kb.targets:
+        targetCount += 1
+
         try:
             if conf.checkInternet:
                 infoMsg = "checking for Internet connection"
@@ -336,6 +337,10 @@ def start():
                         conf.httpHeaders.append((header, value))
                         break
 
+            if conf.data:
+                # Note: explicitly URL encode __ ASP(.NET) parameters (e.g. to avoid problems with Base64 encoded '+' character) - standard procedure in web browsers
+                conf.data = re.sub(r"\b(__\w+)=([^&]+)", lambda match: "%s=%s" % (match.group(1), urlencode(match.group(2), safe='%')), conf.data)
+
             conf.httpHeaders = [conf.httpHeaders[i] for i in xrange(len(conf.httpHeaders)) if conf.httpHeaders[i][0].upper() not in (__[0].upper() for __ in conf.httpHeaders[i + 1:])]
 
             initTargetEnv()
@@ -371,18 +376,16 @@ def start():
                 continue
 
             if conf.multipleTargets:
-                hostCount += 1
-
                 if conf.forms and conf.method:
-                    message = "[#%d] form:\n%s %s" % (hostCount, conf.method, targetUrl)
+                    message = "[%d/%s] Form:\n%s %s" % (targetCount, len(kb.targets) if isListLike(kb.targets) else '?', conf.method, targetUrl)
                 else:
-                    message = "URL %d:\n%s %s" % (hostCount, HTTPMETHOD.GET, targetUrl)
+                    message = "[%d/%s] URL:\n%s %s" % (targetCount, len(kb.targets) if isListLike(kb.targets) else '?', HTTPMETHOD.GET, targetUrl)
 
                 if conf.cookie:
                     message += "\nCookie: %s" % conf.cookie
 
                 if conf.data is not None:
-                    message += "\n%s data: %s" % ((conf.method if conf.method != HTTPMETHOD.GET else conf.method) or HTTPMETHOD.POST, urlencode(conf.data or "") if re.search(r"\A\s*[<{]", conf.data or "") is None else conf.data)
+                    message += "\n%s data: %s" % ((conf.method if conf.method != HTTPMETHOD.GET else None) or HTTPMETHOD.POST, urlencode(conf.data or "") if re.search(r"\A\s*[<{]", conf.data or "") is None else conf.data)
 
                 if conf.forms and conf.method:
                     if conf.method == HTTPMETHOD.GET and targetUrl.find("?") == -1:
@@ -413,21 +416,24 @@ def start():
                         parseTargetUrl()
 
                 else:
-                    message += "\ndo you want to test this URL? [Y/n/q]"
-                    choice = readInput(message, default='Y').upper()
+                    if not conf.scope:
+                        message += "\ndo you want to test this URL? [Y/n/q]"
+                        choice = readInput(message, default='Y').upper()
 
-                    if choice == 'N':
-                        dataToStdout(os.linesep)
-                        continue
-                    elif choice == 'Q':
-                        break
+                        if choice == 'N':
+                            dataToStdout(os.linesep)
+                            continue
+                        elif choice == 'Q':
+                            break
+                    else:
+                        pass
 
                     infoMsg = "testing URL '%s'" % targetUrl
                     logger.info(infoMsg)
 
             setupTargetEnv()
 
-            if not checkConnection(suppressOutput=conf.forms) or not checkString() or not checkRegexp():
+            if not checkConnection(suppressOutput=conf.forms):
                 continue
 
             if conf.rParam and kb.originalPage:
@@ -445,7 +451,6 @@ def start():
                 checkNullConnection()
 
             if (len(kb.injections) == 0 or (len(kb.injections) == 1 and kb.injections[0].place is None)) and (kb.injection.place is None or kb.injection.parameter is None):
-
                 if not any((conf.string, conf.notString, conf.regexp)) and PAYLOAD.TECHNIQUE.BOOLEAN in conf.technique:
                     # NOTE: this is not needed anymore, leaving only to display
                     # a warning message to the user in case the page is not stable
@@ -492,7 +497,7 @@ def start():
                     if skip:
                         continue
 
-                    if place not in conf.paramDict:
+                    if place not in conf.paramDict or place not in conf.parameters:
                         continue
 
                     paramDict = conf.paramDict[place]
@@ -506,6 +511,23 @@ def start():
                         kb.vainRun = False
                         testSqlInj = True
                         paramKey = (conf.hostname, conf.path, place, parameter)
+
+                        if kb.processUserMarks:
+                            if testSqlInj and place not in (PLACE.CUSTOM_POST, PLACE.CUSTOM_HEADER, PLACE.URI):
+                                if kb.processNonCustom is None:
+                                    message = "other non-custom parameters found. "
+                                    message += "Do you want to process them too? [Y/n/q] "
+                                    choice = readInput(message, default='Y').upper()
+
+                                    if choice == 'Q':
+                                        raise SqlmapUserQuitException
+                                    else:
+                                        kb.processNonCustom = choice == 'Y'
+
+                                if not kb.processNonCustom:
+                                    infoMsg = "skipping %sparameter '%s'" % ("%s " % paramType if paramType != parameter else "", parameter)
+                                    logger.info(infoMsg)
+                                    continue
 
                         if paramKey in kb.testedParams:
                             testSqlInj = False
@@ -528,7 +550,7 @@ def start():
                             infoMsg = "skipping %sparameter '%s'" % ("%s " % paramType if paramType != parameter else "", parameter)
                             logger.info(infoMsg)
 
-                        elif conf.paramExclude and (re.search(conf.paramExclude, parameter, re.I) or kb.postHint and re.search(conf.paramExclude, parameter.split(' ')[-1], re.I)):
+                        elif conf.paramExclude and (re.search(conf.paramExclude, parameter, re.I) or kb.postHint and re.search(conf.paramExclude, parameter.split(' ')[-1], re.I) or re.search(conf.paramExclude, place, re.I)):
                             testSqlInj = False
 
                             infoMsg = "skipping %sparameter '%s'" % ("%s " % paramType if paramType != parameter else "", parameter)
@@ -541,7 +563,7 @@ def start():
                             logger.info(infoMsg)
 
                         # Ignore session-like parameters for --level < 4
-                        elif conf.level < 4 and (parameter.upper() in IGNORE_PARAMETERS or any(_ in parameter.lower() for _ in CSRF_TOKEN_PARAMETER_INFIXES) or parameter.upper().startswith(GOOGLE_ANALYTICS_COOKIE_PREFIX)):
+                        elif conf.level < 4 and (parameter.upper() in IGNORE_PARAMETERS or any(_ in parameter.lower() for _ in CSRF_TOKEN_PARAMETER_INFIXES) or re.search(GOOGLE_ANALYTICS_COOKIE_REGEX, parameter)):
                             testSqlInj = False
 
                             infoMsg = "ignoring %sparameter '%s'" % ("%s " % paramType if paramType != parameter else "", parameter)
@@ -552,7 +574,7 @@ def start():
 
                             if not check:
                                 warnMsg = "%sparameter '%s' does not appear to be dynamic" % ("%s " % paramType if paramType != parameter else "", parameter)
-                                logger.warn(warnMsg)
+                                logger.warning(warnMsg)
 
                                 if conf.skipStatic:
                                     infoMsg = "skipping static %sparameter '%s'" % ("%s " % paramType if paramType != parameter else "", parameter)
@@ -594,6 +616,19 @@ def start():
 
                                         kb.injections.append(injection)
 
+                                        if not kb.alerted:
+                                            if conf.alert:
+                                                infoMsg = "executing alerting shell command(s) ('%s')" % conf.alert
+                                                logger.info(infoMsg)
+                                                try:
+                                                    process = subprocess.Popen(conf.alert, shell=True)
+                                                    process.wait()
+                                                except Exception as ex:
+                                                    errMsg = "error occurred while executing '%s' ('%s')" % (conf.alert, getSafeExString(ex))
+                                                    logger.error(errMsg)
+
+                                            kb.alerted = True
+
                                         # In case when user wants to end detection phase (Ctrl+C)
                                         if not proceed:
                                             break
@@ -608,7 +643,7 @@ def start():
 
                                 if not injectable:
                                     warnMsg = "%sparameter '%s' does not seem to be injectable" % ("%s " % paramType if paramType != parameter else "", parameter)
-                                    logger.warn(warnMsg)
+                                    logger.warning(warnMsg)
 
                             finally:
                                 if place == PLACE.COOKIE:
@@ -697,9 +732,15 @@ def start():
                     action()
 
         except KeyboardInterrupt:
+            if kb.lastCtrlCTime and (time.time() - kb.lastCtrlCTime < 1):
+                kb.multipleCtrlC = True
+                raise SqlmapUserQuitException("user aborted (Ctrl+C was pressed multiple times)")
+
+            kb.lastCtrlCTime = time.time()
+
             if conf.multipleTargets:
                 warnMsg = "user aborted in multiple target mode"
-                logger.warn(warnMsg)
+                logger.warning(warnMsg)
 
                 message = "do you want to skip to the next target in list? [Y/n/q]"
                 choice = readInput(message, default='Y').upper()
@@ -726,7 +767,7 @@ def start():
             if conf.multipleTargets:
                 _saveToResultsFile()
 
-                errMsg += ", skipping to the next %s" % ("form" if conf.forms else "URL")
+                errMsg += ", skipping to the next target"
                 logger.error(errMsg.lstrip(", "))
             else:
                 logger.critical(errMsg)
@@ -739,7 +780,7 @@ def start():
                 warnMsg = "it appears that the target "
                 warnMsg += "has a maximum connections "
                 warnMsg += "constraint"
-                logger.warn(warnMsg)
+                logger.warning(warnMsg)
 
     if kb.dataOutputFlag and not conf.multipleTargets:
         logger.info("fetched data logged to text files under '%s'" % conf.outputPath)

@@ -1,15 +1,16 @@
 #!/usr/bin/env python
 
 """
-Copyright (c) 2006-2020 sqlmap developers (http://sqlmap.org/)
+Copyright (c) 2006-2025 sqlmap developers (https://sqlmap.org)
 See the file 'LICENSE' for copying permission
 """
 
-import collections
 import copy
+import threading
 import types
 
 from thirdparty.odict import OrderedDict
+from thirdparty.six.moves import collections_abc as _collections
 
 class AttribDict(dict):
     """
@@ -21,13 +22,14 @@ class AttribDict(dict):
     1
     """
 
-    def __init__(self, indict=None, attribute=None):
+    def __init__(self, indict=None, attribute=None, keycheck=True):
         if indict is None:
             indict = {}
 
         # Set any attributes here - before initialisation
         # these remain as normal attributes
         self.attribute = attribute
+        self.keycheck = keycheck
         dict.__init__(self, indict)
         self.__initialised = True
 
@@ -43,7 +45,23 @@ class AttribDict(dict):
         try:
             return self.__getitem__(item)
         except KeyError:
-            raise AttributeError("unable to access item '%s'" % item)
+            if self.keycheck:
+                raise AttributeError("unable to access item '%s'" % item)
+            else:
+                return None
+
+    def __delattr__(self, item):
+        """
+        Deletes attributes
+        """
+
+        try:
+            return self.pop(item)
+        except KeyError:
+            if self.keycheck:
+                raise AttributeError("unable to access item '%s'" % item)
+            else:
+                return None
 
     def __setattr__(self, item, value):
         """
@@ -125,6 +143,7 @@ class LRUDict(object):
     def __init__(self, capacity):
         self.capacity = capacity
         self.cache = OrderedDict()
+        self.__lock = threading.Lock()
 
     def __len__(self):
         return len(self.cache)
@@ -141,11 +160,12 @@ class LRUDict(object):
         return self.__getitem__(key)
 
     def __setitem__(self, key, value):
-        try:
-            self.cache.pop(key)
-        except KeyError:
-            if len(self.cache) >= self.capacity:
-                self.cache.popitem(last=False)
+        with self.__lock:
+            try:
+                self.cache.pop(key)
+            except KeyError:
+                if len(self.cache) >= self.capacity:
+                    self.cache.popitem(last=False)
         self.cache[key] = value
 
     def set(self, key, value):
@@ -155,7 +175,7 @@ class LRUDict(object):
         return self.cache.keys()
 
 # Reference: https://code.activestate.com/recipes/576694/
-class OrderedSet(collections.MutableSet):
+class OrderedSet(_collections.MutableSet):
     """
     This class defines the set with ordered (as added) items
 

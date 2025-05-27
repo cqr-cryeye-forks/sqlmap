@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-Copyright (c) 2006-2020 sqlmap developers (http://sqlmap.org/)
+Copyright (c) 2006-2025 sqlmap developers (https://sqlmap.org)
 See the file 'LICENSE' for copying permission
 """
 
@@ -13,13 +13,18 @@ import sys
 from lib.core.common import Backend
 from lib.core.common import dataToStdout
 from lib.core.common import getSQLSnippet
+from lib.core.common import isListLike
 from lib.core.common import isStackingAvailable
+from lib.core.common import joinValue
+from lib.core.compat import xrange
 from lib.core.convert import getUnicode
 from lib.core.data import conf
 from lib.core.data import logger
 from lib.core.dicts import SQL_STATEMENTS
 from lib.core.enums import AUTOCOMPLETE_TYPE
+from lib.core.enums import DBMS
 from lib.core.exception import SqlmapNoneDataException
+from lib.core.settings import METADB_SUFFIX
 from lib.core.settings import NULL
 from lib.core.settings import PARAMETER_SPLITTING_REGEX
 from lib.core.shell import autoCompletion
@@ -39,6 +44,7 @@ class Custom(object):
         sqlType = None
         query = query.rstrip(';')
 
+
         try:
             for sqlTitle, sqlStatements in SQL_STATEMENTS.items():
                 for sqlStatement in sqlStatements:
@@ -46,17 +52,29 @@ class Custom(object):
                         sqlType = sqlTitle
                         break
 
-            if not any(_ in query.upper() for _ in ("OPENROWSET", "INTO")) and (not sqlType or "SELECT" in sqlType):
+            if not re.search(r"\b(OPENROWSET|INTO)\b", query, re.I) and (not sqlType or "SELECT" in sqlType):
                 infoMsg = "fetching %s query output: '%s'" % (sqlType if sqlType is not None else "SQL", query)
                 logger.info(infoMsg)
 
+                if Backend.isDbms(DBMS.MSSQL):
+                    match = re.search(r"(\bFROM\s+)([^\s]+)", query, re.I)
+                    if match and match.group(2).count('.') == 1:
+                        query = query.replace(match.group(0), "%s%s" % (match.group(1), match.group(2).replace('.', ".dbo.")))
+
+                query = re.sub(r"(?i)\w+%s\.?" % METADB_SUFFIX, "", query)
+
                 output = inject.getValue(query, fromUser=True)
+
+                if sqlType and "SELECT" in sqlType and isListLike(output):
+                    for i in xrange(len(output)):
+                        if isListLike(output[i]):
+                            output[i] = joinValue(output[i])
 
                 return output
             elif not isStackingAvailable() and not conf.direct:
                 warnMsg = "execution of non-query SQL statements is only "
                 warnMsg += "available when stacked queries are supported"
-                logger.warn(warnMsg)
+                logger.warning(warnMsg)
 
                 return None
             else:
@@ -71,7 +89,7 @@ class Custom(object):
                 output = NULL
 
         except SqlmapNoneDataException as ex:
-            logger.warn(ex)
+            logger.warning(ex)
 
         return output
 
@@ -89,6 +107,10 @@ class Custom(object):
                 query = _input("sql-shell> ")
                 query = getUnicode(query, encoding=sys.stdin.encoding)
                 query = query.strip("; ")
+            except UnicodeDecodeError:
+                print()
+                errMsg = "invalid user input"
+                logger.error(errMsg)
             except KeyboardInterrupt:
                 print()
                 errMsg = "user aborted"

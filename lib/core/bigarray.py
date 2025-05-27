@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-Copyright (c) 2006-2020 sqlmap developers (http://sqlmap.org/)
+Copyright (c) 2006-2025 sqlmap developers (https://sqlmap.org)
 See the file 'LICENSE' for copying permission
 """
 
@@ -10,11 +10,12 @@ try:
 except:
     import pickle
 
-import bz2
 import itertools
 import os
 import sys
 import tempfile
+import threading
+import zlib
 
 from lib.core.compat import xrange
 from lib.core.enums import MKSTEMP_PREFIX
@@ -22,19 +23,22 @@ from lib.core.exception import SqlmapSystemException
 from lib.core.settings import BIGARRAY_CHUNK_SIZE
 from lib.core.settings import BIGARRAY_COMPRESS_LEVEL
 
-DEFAULT_SIZE_OF = sys.getsizeof(object())
+try:
+    DEFAULT_SIZE_OF = sys.getsizeof(object())
+except TypeError:
+    DEFAULT_SIZE_OF = 16
 
-def _size_of(object_):
+def _size_of(instance):
     """
-    Returns total size of a given object_ (in bytes)
+    Returns total size of a given instance / object (in bytes)
     """
 
-    retval = sys.getsizeof(object_, DEFAULT_SIZE_OF)
+    retval = sys.getsizeof(instance, DEFAULT_SIZE_OF)
 
-    if isinstance(object_, dict):
-        retval += sum(_size_of(_) for _ in itertools.chain.from_iterable(object_.items()))
-    elif hasattr(object_, "__iter__"):
-        retval += sum(_size_of(_) for _ in object_ if _ != object_)
+    if isinstance(instance, dict):
+        retval += sum(_size_of(_) for _ in itertools.chain.from_iterable(instance.items()))
+    elif hasattr(instance, "__iter__"):
+        retval += sum(_size_of(_) for _ in instance if _ != instance)
 
     return retval
 
@@ -54,8 +58,16 @@ class BigArray(list):
 
     >>> _ = BigArray(xrange(100000))
     >>> _[20] = 0
-    >>> _[100]
-    100
+    >>> _[99999]
+    99999
+    >>> _ += [0]
+    >>> _[100000]
+    0
+    >>> _ = _ + [1]
+    >>> _[-1]
+    1
+    >>> len([_ for _ in BigArray(xrange(100000))])
+    100000
     """
 
     def __init__(self, items=None):
@@ -63,25 +75,41 @@ class BigArray(list):
         self.chunk_length = sys.maxsize
         self.cache = None
         self.filenames = set()
+        self._lock = threading.Lock()
         self._os_remove = os.remove
         self._size_counter = 0
 
         for item in (items or []):
             self.append(item)
 
+    def __add__(self, value):
+        retval = BigArray(self)
+
+        for _ in value:
+            retval.append(_)
+
+        return retval
+
+    def __iadd__(self, value):
+        for _ in value:
+            self.append(_)
+
+        return self
+
     def append(self, value):
-        self.chunks[-1].append(value)
+        with self._lock:
+            self.chunks[-1].append(value)
 
-        if self.chunk_length == sys.maxsize:
-            self._size_counter += _size_of(value)
-            if self._size_counter >= BIGARRAY_CHUNK_SIZE:
-                self.chunk_length = len(self.chunks[-1])
-                self._size_counter = None
+            if self.chunk_length == sys.maxsize:
+                self._size_counter += _size_of(value)
+                if self._size_counter >= BIGARRAY_CHUNK_SIZE:
+                    self.chunk_length = len(self.chunks[-1])
+                    self._size_counter = None
 
-        if len(self.chunks[-1]) >= self.chunk_length:
-            filename = self._dump(self.chunks[-1])
-            self.chunks[-1] = filename
-            self.chunks.append([])
+            if len(self.chunks[-1]) >= self.chunk_length:
+                filename = self._dump(self.chunks[-1])
+                self.chunks[-1] = filename
+                self.chunks.append([])
 
     def extend(self, value):
         for _ in value:
@@ -92,7 +120,7 @@ class BigArray(list):
             self.chunks.pop()
             try:
                 with open(self.chunks[-1], "rb") as f:
-                    self.chunks[-1] = pickle.loads(bz2.decompress(f.read()))
+                    self.chunks[-1] = pickle.loads(zlib.decompress(f.read()))
             except IOError as ex:
                 errMsg = "exception occurred while retrieving data "
                 errMsg += "from a temporary file ('%s')" % ex
@@ -107,13 +135,24 @@ class BigArray(list):
 
         return ValueError, "%s is not in list" % value
 
+    def close(self):
+        while self.filenames:
+            filename = self.filenames.pop()
+            try:
+                self._os_remove(filename)
+            except OSError:
+                pass
+
+    def __del__(self):
+        self.close()
+
     def _dump(self, chunk):
         try:
             handle, filename = tempfile.mkstemp(prefix=MKSTEMP_PREFIX.BIG_ARRAY)
             self.filenames.add(filename)
             os.close(handle)
             with open(filename, "w+b") as f:
-                f.write(bz2.compress(pickle.dumps(chunk, pickle.HIGHEST_PROTOCOL), BIGARRAY_COMPRESS_LEVEL))
+                f.write(zlib.compress(pickle.dumps(chunk, pickle.HIGHEST_PROTOCOL), BIGARRAY_COMPRESS_LEVEL))
             return filename
         except (OSError, IOError) as ex:
             errMsg = "exception occurred while storing data "
@@ -131,7 +170,7 @@ class BigArray(list):
         if not (self.cache and self.cache.index == index):
             try:
                 with open(self.chunks[index], "rb") as f:
-                    self.cache = Cache(index, pickle.loads(bz2.decompress(f.read())), False)
+                    self.cache = Cache(index, pickle.loads(zlib.decompress(f.read())), False)
             except Exception as ex:
                 errMsg = "exception occurred while retrieving data "
                 errMsg += "from a temporary file ('%s')" % ex
@@ -145,8 +184,12 @@ class BigArray(list):
         self.chunks, self.filenames = state
 
     def __getitem__(self, y):
-        if y < 0:
-            y += len(self)
+        length = len(self)
+        if length == 0:
+            raise IndexError("BigArray index out of range")
+
+        while y < 0:
+            y += length
 
         index = y // self.chunk_length
         offset = y % self.chunk_length
@@ -175,7 +218,10 @@ class BigArray(list):
 
     def __iter__(self):
         for i in xrange(len(self)):
-            yield self[i]
+            try:
+                yield self[i]
+            except IndexError:
+                break
 
     def __len__(self):
         return len(self.chunks[-1]) if len(self.chunks) == 1 else (len(self.chunks) - 1) * self.chunk_length + len(self.chunks[-1])
